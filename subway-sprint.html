@@ -1,0 +1,754 @@
+<title>Subway Sprint</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Layout: one fixed full-height game screen, HUD overlaid on canvas */
+  :root{
+    --bg:#0b0e1a;
+    --panel:#141a2e;
+    --fg:#eef1ff;
+    --dim:#8b93b8;
+    --accent:#ffd23f;
+    --danger:#ff4d6d;
+    --good:#3ddc84;
+    color-scheme: dark;
+  }
+  html,body{height:100%}
+  [hidden]{display:none!important}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--fg);
+    font-family:'Space Grotesk','Segoe UI',system-ui,sans-serif;
+    overflow:hidden;
+  }
+  #wrap{
+    position:relative;
+    height:100%;
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  canvas{display:block;touch-action:none}
+  .overlay{
+    position:absolute;
+    inset:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:18px;
+    text-align:center;
+    background:rgba(8,10,22,.72);
+    backdrop-filter:blur(4px);
+    padding-left:max(16px, env(safe-area-inset-left, 0px));
+    padding-right:max(16px, env(safe-area-inset-right, 0px));
+    padding-block:24px;
+  }
+  .overlay h1{
+    font-size:clamp(34px,8vw,64px);
+    margin:0;
+    letter-spacing:.02em;
+    text-wrap:balance;
+    color:var(--accent);
+    text-shadow:0 4px 0 #b8860b33, 0 0 40px #ffd23f44;
+  }
+  .overlay p{margin:0;color:var(--dim);max-width:34ch;line-height:1.5}
+  .overlay .score-line{font-size:22px;color:var(--fg)}
+  .overlay .score-line b{color:var(--accent);font-variant-numeric:tabular-nums}
+  button.play{
+    font:inherit;
+    font-size:20px;
+    font-weight:600;
+    padding:14px 42px;
+    border-radius:999px;
+    border:none;
+    cursor:pointer;
+    background:var(--accent);
+    color:#1a1400;
+    box-shadow:0 6px 0 #b8860b, 0 10px 24px #0008;
+    transition:transform .08s;
+  }
+  button.play:active{transform:translateY(4px);box-shadow:0 2px 0 #b8860b}
+  button.play:focus-visible{outline:3px solid var(--fg);outline-offset:3px}
+  .keys{
+    display:flex;flex-wrap:wrap;gap:10px;justify-content:center;
+    font-size:13px;color:var(--dim);
+  }
+  .keys span{
+    background:var(--panel);
+    border:1px solid #2a3356;
+    border-radius:8px;
+    padding:6px 12px;
+  }
+  .keys b{color:var(--fg);font-weight:600}
+  #hud{
+    position:absolute;
+    top:env(safe-area-inset-top, 0px);
+    left:0;right:0;
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    padding-left:max(16px, env(safe-area-inset-left, 0px));
+    padding-right:max(16px, env(safe-area-inset-right, 0px));
+    padding-block:12px;
+    pointer-events:none;
+    font-variant-numeric:tabular-nums;
+  }
+  #hud .box{
+    background:rgba(13,17,34,.65);
+    border:1px solid #2a335666;
+    border-radius:12px;
+    padding:8px 14px;
+    min-width:90px;
+  }
+  #hud .label{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+  #hud .val{font-size:22px;font-weight:700}
+  #hud .coins .val{color:var(--accent)}
+  @media (prefers-reduced-motion: reduce){
+    button.play{transition:none}
+  }
+</style>
+
+<div id="wrap">
+  <canvas id="game"></canvas>
+
+  <div id="hud" hidden>
+    <div class="box"><div class="label">Score</div><div class="val" id="hudScore">0</div></div>
+    <div class="box coins"><div class="label">Coins</div><div class="val" id="hudCoins">0</div></div>
+    <div class="box"><div class="label">Best</div><div class="val" id="hudBest">0</div></div>
+  </div>
+
+  <div class="overlay" id="menu">
+    <h1>Subway Sprint</h1>
+    <p>Dodge the trains, leap the barriers, grab every coin. The tracks only get faster.</p>
+    <div class="score-line" id="menuBest" hidden>Best score: <b id="menuBestVal">0</b></div>
+    <button class="play" id="playBtn">Run</button>
+    <div class="keys">
+      <span><b>◀ ▶</b> or swipe — change lane</span>
+      <span><b>▲</b> / swipe up — jump</span>
+      <span><b>▼</b> / swipe down — roll</span>
+    </div>
+  </div>
+
+  <div class="overlay" id="over" hidden>
+    <h1 style="color:var(--danger);text-shadow:0 0 40px #ff4d6d44">Wrecked!</h1>
+    <div class="score-line">Score: <b id="finalScore">0</b></div>
+    <div class="score-line" style="font-size:16px">Coins: <b id="finalCoins">0</b> &nbsp;·&nbsp; Best: <b id="finalBest">0</b></div>
+    <p id="newBest" hidden style="color:var(--good);font-weight:600">New best score!</p>
+    <button class="play" id="againBtn">Run again</button>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+// ---------- setup ----------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const wrap = document.getElementById('wrap');
+  W = wrap.clientWidth || window.innerWidth;
+  H = wrap.clientHeight || window.innerHeight;
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---------- persistence ----------
+function loadBest() {
+  try { return parseInt(localStorage.getItem('subwaySprintBest') || '0', 10) || 0; }
+  catch (e) { return 0; }
+}
+function saveBest(v) {
+  try { localStorage.setItem('subwaySprintBest', String(v)); } catch (e) {}
+}
+
+// ---------- audio (created on first user gesture) ----------
+let audio = null;
+function initAudio() {
+  if (audio) return;
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+}
+function beep(freq, dur, type, vol) {
+  if (!audio || audio.state === 'suspended') return;
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, audio.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + dur);
+  o.connect(g); g.connect(audio.destination);
+  o.start(); o.stop(audio.currentTime + dur);
+}
+function sndCoin()  { beep(1320, .12, 'square', .05); beep(1760, .15, 'square', .04); }
+function sndJump()  { beep(440, .15, 'triangle', .06); }
+function sndCrash() { beep(110, .4, 'sawtooth', .12); beep(80, .5, 'square', .1); }
+
+// ---------- game constants ----------
+const LANE_X = [-1, 0, 1];          // lane world positions
+const LANE_W = 2.2;                 // world units between lanes
+const Z_MAX = 60;                   // spawn distance
+const NEAR = 6;                     // perspective near plane
+const PLAYER_Z = 2.5;               // player's world depth from camera
+const JUMP_V = 9.2;
+const GRAVITY = 22;
+const ROLL_TIME = 0.62;
+const LANE_SNAP = 12;               // lane-change speed
+
+// obstacle types
+const T_TRAIN = 0, T_LOW = 1, T_HIGH = 2;
+
+// ---------- state ----------
+let state = 'menu';                  // menu | playing | dead
+let best = loadBest();
+let score = 0, coins = 0, dist = 0;
+let speed = 0, baseSpeed = 14;
+let player, obstacles, coinList, spawnZ, shake, deadTimer;
+let tPrev = 0, runT = 0;
+
+function newGame() {
+  score = 0; coins = 0; dist = 0; runT = 0;
+  speed = baseSpeed;
+  player = { lane: 1, x: 0, y: 0, vy: 0, rolling: 0, airborne: false };
+  obstacles = [];
+  coinList = [];
+  spawnZ = 32;
+  shake = 0;
+  deadTimer = 0;
+  state = 'playing';
+  hud.hidden = false;
+  menu.hidden = true;
+  over.hidden = true;
+}
+
+// ---------- spawning ----------
+function rnd(n) { return Math.floor(Math.random() * n); }
+
+function spawnRow(z) {
+  // pick a pattern that always leaves an escape
+  const freeLane = rnd(3);
+  const pattern = rnd(10);
+  let rowLen = 0;
+  for (let l = 0; l < 3; l++) {
+    if (l === freeLane) {
+      // free lanes often get coins
+      if (rnd(10) < 7) spawnCoinLine(l, z, 5);
+      continue;
+    }
+    if (pattern < 4) {
+      // trains on blocked lanes (long)
+      if (rnd(10) < 6) {
+        const len = 14 + rnd(10);
+        obstacles.push({ type: T_TRAIN, lane: l, z, len, hue: [205, 0, 130][rnd(3)] });
+        rowLen = Math.max(rowLen, len);
+      } else spawnBarrier(l, z);
+    } else if (pattern < 8) {
+      if (rnd(10) < 5) spawnBarrier(l, z);
+    } else {
+      // dense row: barriers everywhere but the free lane
+      spawnBarrier(l, z);
+    }
+  }
+  return rowLen;
+}
+
+function spawnBarrier(l, z) {
+  const t = rnd(10) < 6 ? T_LOW : T_HIGH;
+  obstacles.push({ type: t, lane: l, z, len: 1.2 });
+  if (t === T_LOW && rnd(10) < 5) spawnCoinArc(l, z);
+}
+
+function spawnCoinLine(l, z, n) {
+  for (let i = 0; i < n; i++) coinList.push({ lane: l, z: z + i * 2.2, y: 0.5, got: false });
+}
+function spawnCoinArc(l, z) {
+  for (let i = 0; i < 5; i++) {
+    const t = i / 4;
+    coinList.push({ lane: l, z: z - 3 + t * 6, y: 0.5 + Math.sin(t * Math.PI) * 2.2, got: false });
+  }
+}
+
+// ---------- input ----------
+function moveLane(d) {
+  if (state !== 'playing') return;
+  player.lane = Math.max(0, Math.min(2, player.lane + d));
+}
+function jump() {
+  if (state !== 'playing' || player.airborne) return;
+  player.vy = JUMP_V; player.airborne = true; player.rolling = 0;
+  sndJump();
+}
+function roll() {
+  if (state !== 'playing') return;
+  if (player.airborne) { player.vy = -16; } // slam down
+  player.rolling = ROLL_TIME;
+}
+
+window.addEventListener('keydown', (e) => {
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
+  if (state === 'menu' && (e.key === ' ' || e.key === 'Enter')) { startRun(); return; }
+  if (state === 'dead' && (e.key === ' ' || e.key === 'Enter') && deadTimer > 0.5) { startRun(); return; }
+  switch (e.key) {
+    case 'ArrowLeft': case 'a': case 'A': moveLane(-1); break;
+    case 'ArrowRight': case 'd': case 'D': moveLane(1); break;
+    case 'ArrowUp': case 'w': case 'W': case ' ': jump(); break;
+    case 'ArrowDown': case 's': case 'S': roll(); break;
+  }
+});
+
+// swipe
+let tx0 = 0, ty0 = 0, tt0 = 0;
+canvas.addEventListener('pointerdown', (e) => { tx0 = e.clientX; ty0 = e.clientY; tt0 = performance.now(); });
+canvas.addEventListener('pointerup', (e) => {
+  const dx = e.clientX - tx0, dy = e.clientY - ty0;
+  const dt = performance.now() - tt0;
+  if (dt > 600) return;
+  const ax = Math.abs(dx), ay = Math.abs(dy);
+  if (ax < 24 && ay < 24) { jump(); return; }   // tap = jump
+  if (ax > ay) moveLane(dx > 0 ? 1 : -1);
+  else (dy < 0 ? jump() : roll());
+});
+
+function startRun() { initAudio(); if (audio && audio.state === 'suspended') audio.resume(); newGame(); }
+
+// ---------- update ----------
+function update(dt) {
+  runT += dt;
+  speed = baseSpeed + Math.min(26, runT * 0.55);          // ramps up over ~45s
+  const dz = speed * dt;
+  dist += dz;
+  score += dz * 1.2;
+
+  // player lane slide
+  const targetX = LANE_X[player.lane] * LANE_W;
+  player.x += (targetX - player.x) * Math.min(1, LANE_SNAP * dt);
+
+  // vertical
+  if (player.airborne) {
+    player.y += player.vy * dt;
+    player.vy -= GRAVITY * dt;
+    if (player.y <= 0) { player.y = 0; player.vy = 0; player.airborne = false; }
+  }
+  if (player.rolling > 0) player.rolling -= dt;
+
+  // scroll world
+  for (const o of obstacles) o.z -= dz;
+  for (const c of coinList) c.z -= dz;
+  obstacles = obstacles.filter(o => o.z + o.len > -4);
+  coinList = coinList.filter(c => !c.got && c.z > -4);
+
+  // spawn ahead
+  spawnZ -= dz;
+  while (spawnZ < Z_MAX) {
+    const rowLen = spawnRow(spawnZ);
+    // gap after a row: reaction room scales with speed, and trains must fully pass first
+    spawnZ += rowLen + Math.max(11, speed * 0.55) + rnd(7) + Math.max(0, 8 - runT * 0.15);
+  }
+
+  // collisions
+  const pLane = nearestLane(player.x);
+  const pLow = player.y;
+  const pHigh = player.y + (player.rolling > 0 ? 0.9 : 1.8);
+  for (const o of obstacles) {
+    if (o.z > PLAYER_Z + 0.6 || o.z + o.len < PLAYER_Z - 0.6) continue;
+    if (o.lane !== pLane) continue;
+    if (o.type === T_TRAIN) { die(); return; }
+    if (o.type === T_LOW && pLow < 1.0) { die(); return; }
+    if (o.type === T_HIGH && pHigh > 1.3) { die(); return; }
+  }
+
+  // coins
+  for (const c of coinList) {
+    if (c.got || Math.abs(c.z - PLAYER_Z) > 1.2) continue;
+    if (nearestLane(player.x) !== c.lane) continue;
+    if (Math.abs((player.y + 0.9) - c.y) < 1.4) {
+      c.got = true; coins++; score += 25; sndCoin();
+    }
+  }
+
+  if (shake > 0) shake -= dt * 3;
+
+  hudScore.textContent = Math.floor(score);
+  hudCoins.textContent = coins;
+  hudBest.textContent = best;
+}
+
+function nearestLane(x) {
+  let bi = 0, bd = 1e9;
+  for (let i = 0; i < 3; i++) {
+    const d = Math.abs(x - LANE_X[i] * LANE_W);
+    if (d < bd) { bd = d; bi = i; }
+  }
+  return bi;
+}
+
+function die() {
+  state = 'dead';
+  deadTimer = 0;
+  shake = 1;
+  sndCrash();
+  const s = Math.floor(score);
+  const isBest = s > best;
+  if (isBest) { best = s; saveBest(best); }
+  finalScore.textContent = s;
+  finalCoins.textContent = coins;
+  finalBest.textContent = best;
+  newBest.hidden = !isBest;
+  setTimeout(() => { over.hidden = false; }, 600);
+}
+
+// ---------- projection ----------
+let horizonY, groundY, cx;
+function proj(x, y, z) {
+  const p = NEAR / (NEAR + Math.max(z, -NEAR * 0.9));
+  const laneScale = Math.min(W, 560) * 0.22;
+  return {
+    x: cx + x * laneScale * p,
+    y: horizonY + (groundY - horizonY) * p - y * laneScale * 0.5 * p,
+    s: p
+  };
+}
+
+// ---------- drawing ----------
+function draw(t) {
+  horizonY = H * 0.36;
+  groundY = H * 0.94;
+  cx = W / 2;
+
+  let ox = 0, oy = 0;
+  if (shake > 0 && !reducedMotion) {
+    ox = (Math.random() - .5) * shake * 18;
+    oy = (Math.random() - .5) * shake * 12;
+  }
+  ctx.save();
+  ctx.translate(ox, oy);
+
+  // sky
+  const sky = ctx.createLinearGradient(0, 0, 0, horizonY);
+  sky.addColorStop(0, '#0b0e1a');
+  sky.addColorStop(1, '#232a4d');
+  ctx.fillStyle = sky;
+  ctx.fillRect(-20, -20, W + 40, horizonY + 20);
+
+  // stars
+  ctx.fillStyle = '#ffffff22';
+  for (let i = 0; i < 40; i++) {
+    const hx = Math.sin(i * 12.9898) * 43758.5453, hy = Math.sin(i * 78.233) * 12543.123;
+    const sx = (hx - Math.floor(hx)) * W, sy = (hy - Math.floor(hy)) * horizonY * 0.8;
+    ctx.fillRect(sx, sy, 2, 2);
+  }
+
+  // moon
+  ctx.fillStyle = '#f5f0da';
+  ctx.beginPath(); ctx.arc(W * 0.78, horizonY * 0.35, 26, 0, 7); ctx.fill();
+  ctx.fillStyle = '#232a4d';
+  ctx.beginPath(); ctx.arc(W * 0.78 + 10, horizonY * 0.35 - 6, 22, 0, 7); ctx.fill();
+
+  // skyline silhouettes (two parallax layers)
+  drawSkyline(0.25, '#141a30', 0.7, t);
+  drawSkyline(0.55, '#1b2340', 0.45, t);
+
+  // ground
+  const gnd = ctx.createLinearGradient(0, horizonY, 0, H);
+  gnd.addColorStop(0, '#2a3151');
+  gnd.addColorStop(1, '#171c33');
+  ctx.fillStyle = gnd;
+  ctx.fillRect(-20, horizonY, W + 40, H - horizonY + 20);
+
+  // track bed edges
+  const edgeL0 = proj(-1.6 * LANE_W, 0, Z_MAX), edgeR0 = proj(1.6 * LANE_W, 0, Z_MAX);
+  const edgeL1 = proj(-1.6 * LANE_W, 0, 0), edgeR1 = proj(1.6 * LANE_W, 0, 0);
+  ctx.fillStyle = '#20263f';
+  ctx.beginPath();
+  ctx.moveTo(edgeL0.x, edgeL0.y); ctx.lineTo(edgeR0.x, edgeR0.y);
+  ctx.lineTo(edgeR1.x, edgeR1.y); ctx.lineTo(edgeL1.x, edgeL1.y);
+  ctx.closePath(); ctx.fill();
+
+  // sleepers (ties) scrolling
+  ctx.strokeStyle = '#3a4268';
+  const tieGap = 4;
+  const off = dist % tieGap;
+  for (let z = Z_MAX; z > -2; z -= tieGap) {
+    const zz = z - off;
+    if (zz < -2) continue;
+    const a = proj(-1.55 * LANE_W, 0, zz), b = proj(1.55 * LANE_W, 0, zz);
+    ctx.lineWidth = Math.max(1, 5 * a.s);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+
+  // rails: two per lane
+  ctx.strokeStyle = '#5a6494';
+  for (const lx of LANE_X) {
+    for (const side of [-0.55, 0.55]) {
+      const a = proj(lx * LANE_W + side, 0, Z_MAX);
+      const b = proj(lx * LANE_W + side, 0, -1);
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+  }
+
+  // collect drawables, far → near
+  const items = [];
+  for (const o of obstacles) items.push({ z: o.z + (o.type === T_TRAIN ? o.len : 0), kind: 'o', o });
+  for (const c of coinList) if (!c.got) items.push({ z: c.z, kind: 'c', c });
+  items.push({ z: PLAYER_Z, kind: 'p' });
+  items.sort((a, b) => b.z - a.z);
+
+  for (const it of items) {
+    if (it.kind === 'o') drawObstacle(it.o);
+    else if (it.kind === 'c') drawCoin(it.c, t);
+    else drawPlayer(t);
+  }
+
+  ctx.restore();
+}
+
+function drawSkyline(depth, color, hScale, t) {
+  ctx.fillStyle = color;
+  const D = dist * depth * 6;
+  const scroll = D % 160;
+  const wrapBase = 2 * Math.floor(D / 160);
+  for (let x = -scroll - 160, k = -2; x < W + 160; x += 80, k++) {
+    const seed = Math.abs(k + wrapBase) + 3;
+    const h = (30 + ((seed * 73) % 90)) * hScale;
+    const w = 50 + ((seed * 37) % 30);
+    ctx.fillRect(x, horizonY - h, w, h);
+    // windows
+    if (((seed * 13) % 3) === 0) {
+      ctx.fillStyle = '#ffd23f33';
+      for (let wy = horizonY - h + 8; wy < horizonY - 10; wy += 14)
+        ctx.fillRect(x + 8 + ((seed * 7 + Math.round(horizonY - wy)) % 20), wy, 5, 6);
+      ctx.fillStyle = color;
+    }
+  }
+}
+
+function drawObstacle(o) {
+  if (o.z > Z_MAX + 2) return;
+  const lx = LANE_X[o.lane] * LANE_W;
+  if (o.type === T_TRAIN) drawTrain(o, lx);
+  else if (o.type === T_LOW) drawLowBarrier(o, lx);
+  else drawHighBarrier(o, lx);
+}
+
+function drawTrain(o, lx) {
+  const zNear = Math.max(o.z, -1.5), zFar = Math.min(o.z + o.len, Z_MAX + 2);
+  if (zFar <= zNear) return;
+  const hw = 0.95, hgt = 2.6;
+  const col = `hsl(${o.hue} 55% 46%)`;
+  const colD = `hsl(${o.hue} 55% 32%)`;
+  const colT = `hsl(${o.hue} 45% 58%)`;
+
+  const fl = proj(lx - hw, 0, zNear), fr = proj(lx + hw, 0, zNear);
+  const flT = proj(lx - hw, hgt, zNear), frT = proj(lx + hw, hgt, zNear);
+  const bl = proj(lx - hw, 0, zFar), br = proj(lx + hw, 0, zFar);
+  const blT = proj(lx - hw, hgt, zFar), brT = proj(lx + hw, hgt, zFar);
+
+  // side (pick visible side based on lane vs center)
+  ctx.fillStyle = colD;
+  if (fl.x > cx) { // left side visible
+    ctx.beginPath(); ctx.moveTo(fl.x, fl.y); ctx.lineTo(bl.x, bl.y); ctx.lineTo(blT.x, blT.y); ctx.lineTo(flT.x, flT.y); ctx.closePath(); ctx.fill();
+  } else if (fr.x < cx) {
+    ctx.beginPath(); ctx.moveTo(fr.x, fr.y); ctx.lineTo(br.x, br.y); ctx.lineTo(brT.x, brT.y); ctx.lineTo(frT.x, frT.y); ctx.closePath(); ctx.fill();
+  }
+  // roof
+  ctx.fillStyle = colT;
+  ctx.beginPath(); ctx.moveTo(flT.x, flT.y); ctx.lineTo(frT.x, frT.y); ctx.lineTo(brT.x, brT.y); ctx.lineTo(blT.x, blT.y); ctx.closePath(); ctx.fill();
+  // front face
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.moveTo(fl.x, fl.y); ctx.lineTo(fr.x, fr.y); ctx.lineTo(frT.x, frT.y); ctx.lineTo(flT.x, flT.y); ctx.closePath(); ctx.fill();
+  // windshield + lights on front
+  const wTop = proj(lx, hgt * 0.82, zNear), wBot = proj(lx, hgt * 0.5, zNear);
+  const wW = (fr.x - fl.x) * 0.62;
+  ctx.fillStyle = '#101428';
+  roundRect((wTop.x - wW / 2), wTop.y, wW, wBot.y - wTop.y, 4 * fl.s); ctx.fill();
+  const lightY = proj(lx, hgt * 0.22, zNear).y;
+  ctx.fillStyle = '#fff6c9';
+  const lr = Math.max(2, 7 * fl.s);
+  ctx.beginPath(); ctx.arc(fl.x + (fr.x - fl.x) * 0.22, lightY, lr, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(fl.x + (fr.x - fl.x) * 0.78, lightY, lr, 0, 7); ctx.fill();
+  // glow
+  ctx.fillStyle = '#fff6c922';
+  ctx.beginPath(); ctx.arc(fl.x + (fr.x - fl.x) * 0.5, lightY + 10 * fl.s, lr * 4, 0, 7); ctx.fill();
+}
+
+function drawLowBarrier(o, lx) {
+  const z = o.z; if (z < -1.5) return;
+  const hw = 0.85, h = 1.0;
+  const l = proj(lx - hw, 0, z), r = proj(lx + hw, 0, z);
+  const lT = proj(lx - hw, h, z), rT = proj(lx + hw, h, z);
+  // posts
+  ctx.fillStyle = '#9aa2c7';
+  const pw = Math.max(2, 5 * l.s);
+  ctx.fillRect(l.x - pw / 2, lT.y, pw, l.y - lT.y);
+  ctx.fillRect(r.x - pw / 2, rT.y, pw, r.y - rT.y);
+  // striped bar
+  const barH = Math.max(4, (l.y - lT.y) * 0.45);
+  const grad = ctx.createLinearGradient(l.x, 0, r.x, 0);
+  for (let i = 0; i <= 8; i++) grad.addColorStop(i / 8, i % 2 ? '#ffd23f' : '#e8445a');
+  ctx.fillStyle = grad;
+  roundRect(l.x, lT.y, r.x - l.x, barH, 3 * l.s); ctx.fill();
+}
+
+function drawHighBarrier(o, lx) {
+  const z = o.z; if (z < -1.5) return;
+  const hw = 0.9, hBot = 1.35, hTop = 2.6;
+  const l = proj(lx - hw, hBot, z), r = proj(lx + hw, hBot, z);
+  const lT = proj(lx - hw, hTop, z), rT = proj(lx + hw, hTop, z);
+  const gl = proj(lx - hw, 0, z), gr = proj(lx + hw, 0, z);
+  // hanging posts
+  ctx.fillStyle = '#9aa2c7';
+  const pw = Math.max(2, 5 * gl.s);
+  ctx.fillRect(gl.x - pw / 2, lT.y, pw, gl.y - lT.y);
+  ctx.fillRect(gr.x - pw / 2, rT.y, pw, gr.y - rT.y);
+  // panel: duck under
+  ctx.fillStyle = '#39406b';
+  roundRect(lT.x, lT.y, rT.x - lT.x, l.y - lT.y, 4 * l.s); ctx.fill();
+  ctx.strokeStyle = '#ffd23f';
+  ctx.lineWidth = Math.max(1, 3 * l.s);
+  ctx.beginPath(); ctx.moveTo(lT.x + 6 * l.s, l.y - 4 * l.s); ctx.lineTo(rT.x - 6 * l.s, l.y - 4 * l.s); ctx.stroke();
+}
+
+function drawCoin(c, t) {
+  if (c.z < -1 || c.z > Z_MAX) return;
+  const lx = LANE_X[c.lane] * LANE_W;
+  const p = proj(lx, c.y + 0.5 + Math.sin(t * 4 + c.z) * 0.08, c.z);
+  const r = Math.max(2, 16 * p.s);
+  const squeeze = reducedMotion ? 1 : Math.abs(Math.cos(t * 3 + c.z * 0.7));
+  ctx.fillStyle = '#ffd23f';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y, r * Math.max(0.25, squeeze), r, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#b8860b';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y, r * Math.max(0.12, squeeze * 0.55), r * 0.6, 0, 0, 7); ctx.fill();
+}
+
+function drawPlayer(t) {
+  const p = proj(player.x, player.y, PLAYER_Z);
+  const s = Math.min(W, 560) * 0.22 * p.s * 0.5; // unit scale at player depth
+  const roll = player.rolling > 0;
+  const run = reducedMotion ? 0 : Math.sin(t * 16);
+  const bob = player.airborne || roll ? 0 : Math.abs(run) * 0.08 * s;
+
+  ctx.save();
+  ctx.translate(p.x, p.y - bob);
+
+  // shadow on ground
+  const gp = proj(player.x, 0, PLAYER_Z);
+  ctx.save();
+  ctx.translate(0, gp.y - (p.y - bob));
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath(); ctx.ellipse(0, 0, s * 0.8, s * 0.22, 0, 0, 7); ctx.fill();
+  ctx.restore();
+
+  if (roll) {
+    // tucked ball
+    ctx.fillStyle = '#4da3ff';
+    ctx.beginPath(); ctx.arc(0, -s * 0.55, s * 0.55, 0, 7); ctx.fill();
+    ctx.fillStyle = '#f0b58c';
+    ctx.beginPath(); ctx.arc(s * 0.15, -s * 0.75, s * 0.26, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e8445a';
+    ctx.beginPath(); ctx.arc(s * 0.1, -s * 0.95, s * 0.22, Math.PI, 0); ctx.fill();
+  } else {
+    const lean = player.airborne ? -0.15 : 0;
+    ctx.rotate(lean);
+    // legs
+    ctx.lineWidth = s * 0.22;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#30406e';
+    const legSwing = player.airborne ? 0.5 : run * 0.6;
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.9);
+    ctx.lineTo(s * 0.25 * legSwing, -s * 0.45); ctx.lineTo(s * 0.35 * legSwing, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.9);
+    ctx.lineTo(-s * 0.25 * legSwing, -s * 0.45); ctx.lineTo(-s * 0.35 * legSwing, 0); ctx.stroke();
+    // torso (hoodie)
+    ctx.fillStyle = '#4da3ff';
+    roundRect(-s * 0.38, -s * 1.75, s * 0.76, s * 0.95, s * 0.25); ctx.fill();
+    // arms
+    ctx.strokeStyle = '#4da3ff';
+    ctx.lineWidth = s * 0.18;
+    const armSwing = player.airborne ? -0.8 : -run * 0.6;
+    ctx.beginPath(); ctx.moveTo(-s * 0.3, -s * 1.55); ctx.lineTo(-s * 0.5, -s * (1.1 + armSwing * 0.3)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s * 0.3, -s * 1.55); ctx.lineTo(s * 0.5, -s * (1.1 - armSwing * 0.3)); ctx.stroke();
+    // head
+    ctx.fillStyle = '#f0b58c';
+    ctx.beginPath(); ctx.arc(0, -s * 2.0, s * 0.3, 0, 7); ctx.fill();
+    // cap
+    ctx.fillStyle = '#e8445a';
+    ctx.beginPath(); ctx.arc(0, -s * 2.08, s * 0.28, Math.PI, 0); ctx.fill();
+    ctx.fillRect(-s * 0.28, -s * 2.12, s * 0.45, s * 0.1);
+  }
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, Math.abs(h) / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// ---------- main loop ----------
+function frame(tms) {
+  const t = tms / 1000;
+  let dt = Math.min(0.05, t - tPrev);
+  tPrev = t;
+  if (state === 'playing') update(dt);
+  if (state === 'dead') deadTimer += dt;
+  if (state === 'menu' && !reducedMotion) dist += dt * 6;
+  draw(t);
+  requestAnimationFrame(frame);
+}
+
+// ---------- DOM refs ----------
+const menu = document.getElementById('menu');
+const over = document.getElementById('over');
+const hud = document.getElementById('hud');
+const hudScore = document.getElementById('hudScore');
+const hudCoins = document.getElementById('hudCoins');
+const hudBest = document.getElementById('hudBest');
+const finalScore = document.getElementById('finalScore');
+const finalCoins = document.getElementById('finalCoins');
+const finalBest = document.getElementById('finalBest');
+const newBest = document.getElementById('newBest');
+const menuBest = document.getElementById('menuBest');
+const menuBestVal = document.getElementById('menuBestVal');
+
+document.getElementById('playBtn').addEventListener('click', startRun);
+document.getElementById('againBtn').addEventListener('click', startRun);
+
+function showMenu() {
+  state = 'menu';
+  menu.hidden = false;
+  over.hidden = true;
+  hud.hidden = true;
+  if (best > 0) { menuBest.hidden = false; menuBestVal.textContent = best; }
+  // idle background scene
+  player = { lane: 1, x: 0, y: 0, vy: 0, rolling: 0, airborne: false };
+  obstacles = []; coinList = []; dist = 0;
+}
+
+// ---------- boot (hot-update aware) ----------
+function boot(data) {
+  if (data && typeof data.best === 'number' && data.best > best) {
+    best = data.best; saveBest(best);
+  }
+  showMenu();
+  requestAnimationFrame((tms) => { tPrev = tms / 1000; requestAnimationFrame(frame); });
+}
+window.claude?.hot?.snapshot?.(() => ({ best }));
+window.claude?.hot?.ready ? window.claude.hot.ready(boot) : boot(window.claude?.hot?.data ?? {});
+
+})();
+</script>
